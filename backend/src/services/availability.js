@@ -85,6 +85,25 @@ export function getAvailableSlots({ staffId, date, durationMinutes }) {
   return slots;
 }
 
+/**
+ * "First free chair" availability: the union of every active barber's open
+ * slots for a date. A slot time is offered if AT LEAST ONE barber can take
+ * it - the specific barber is resolved later, at booking time
+ * (see bookingService.pickAvailableStaffId). Deduped and sorted so the
+ * customer sees one clean list of times regardless of how many barbers
+ * happen to be free at each.
+ */
+export function getAvailableSlotsForAny({ date, durationMinutes }) {
+  const staff = db.prepare('SELECT id FROM staff WHERE active = 1').all();
+  const union = new Set();
+  for (const s of staff) {
+    for (const iso of getAvailableSlots({ staffId: s.id, date, durationMinutes })) {
+      union.add(iso);
+    }
+  }
+  return [...union].sort();
+}
+
 function addMinutes(date, minutes) {
   return new Date(date.getTime() + minutes * 60_000);
 }

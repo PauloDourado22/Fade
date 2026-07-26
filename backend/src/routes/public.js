@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { getAvailableSlots } from '../services/availability.js';
+import { getAvailableSlots, getAvailableSlotsForAny } from '../services/availability.js';
 import {
   createHoldWithCheckout,
   getAppointmentByPublicCode,
@@ -38,11 +38,21 @@ publicRouter.get('/staff', (req, res) => {
 });
 
 publicRouter.get('/availability', (req, res) => {
-  const staffId = Number(req.query.staffId);
+  const rawStaff = req.query.staffId; // a numeric id, or the literal 'any'
   const date = req.query.date; // 'YYYY-MM-DD'
   const durationMinutes = Number(req.query.durationMinutes);
 
-  if (!isPositiveInteger(staffId) || !isPositiveInteger(durationMinutes) || typeof date !== 'string') {
+  if (!isPositiveInteger(durationMinutes) || typeof date !== 'string') {
+    return res.status(400).json({ error: 'staffId, date, and durationMinutes are required.' });
+  }
+
+  // 'any' = first free chair: return the union of every barber's open slots.
+  if (rawStaff === 'any') {
+    return res.json({ slots: getAvailableSlotsForAny({ date, durationMinutes }) });
+  }
+
+  const staffId = Number(rawStaff);
+  if (!isPositiveInteger(staffId)) {
     return res.status(400).json({ error: 'staffId, date, and durationMinutes are required.' });
   }
 
@@ -57,9 +67,11 @@ const bookingLimiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 8 });
 publicRouter.post('/appointments', bookingLimiter, async (req, res, next) => {
   const { serviceId, staffId, startAt, customer } = req.body ?? {};
 
+  // staffId may be a real id or the literal 'any' (first free chair).
+  const staffOk = staffId === 'any' || isPositiveInteger(staffId);
   if (
     !isPositiveInteger(serviceId) ||
-    !isPositiveInteger(staffId) ||
+    !staffOk ||
     !isIsoDateString(startAt) ||
     !customer ||
     !isNonEmptyString(customer.name, 100) ||

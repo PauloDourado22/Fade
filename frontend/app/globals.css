@@ -21,7 +21,7 @@
 
   --text: #f4f2ea;
   --text-muted: #8f8d82;
-  --text-faint: #5c5a51;
+  --text-faint: #7d7b72; /* ~4.5:1 on --bg (was #5c5a51 ≈ 2.8:1, under WCAG AA) */
 
   --accent: #d6f94b;
   --accent-text: #0e0e0e;
@@ -265,12 +265,60 @@ a { color: inherit; text-decoration: none; }
    ============================================================ */
 .book-shell { max-width: 1080px; margin: 0 auto; padding: 0 0 72px; }
 
+/* Sticky so the choices + price stay visible while the slot list scrolls.
+   Backed by the page bg so scrolled content doesn't bleed through. */
+.book-mobile-top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
 .book-mobile-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px;
 }
+
+/* Running summary of the customer's choices so far + the price. The whole
+   block only renders once a barber is picked, so it never shows a row of
+   empty placeholders. */
+.book-mobile-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 24px 14px;
+}
+
+.bms-choices {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.bms-val { color: var(--text); }
+.bms-empty { color: var(--text-muted); }
+.bms-sep { color: var(--text-faint); }
+
+.bms-price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.bms-dep { color: var(--accent); font-size: 11px; }
 
 .circle-btn {
   width: 40px;
@@ -330,7 +378,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 @media (min-width: 860px) {
-  .book-mobile-header { display: none; }
+  .book-mobile-top { display: none; }
 
   .book-grid {
     display: grid;
@@ -460,6 +508,33 @@ a { color: inherit; text-decoration: none; }
   flex-shrink: 0;
 }
 
+/* "First free chair" fast-path card: full width above the barber grid, with
+   a lime-tinted avatar to read as the recommended/quick option without
+   shouting. Full accent border only once selected, like every other card. */
+.option-card.any-chair { display: block; width: 100%; margin-bottom: 16px; }
+.avatar-circle.any { background: var(--accent-soft); color: var(--accent); font-size: 20px; }
+
+/* Divider between the fast path and the named barbers - a labeled rule, not
+   another card, so the two choices don't read as the same kind of thing. */
+.crew-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.crew-divider::before,
+.crew-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
 .slot-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
@@ -544,6 +619,31 @@ a { color: inherit; text-decoration: none; }
   border-radius: 50%;
   background: var(--accent);
 }
+
+/* Loading skeleton for the slot fetch: same row rhythm as a real slot so the
+   layout doesn't jump when results arrive, with a shimmer that reads clearly
+   as "working". */
+.slot-row-skeleton { cursor: default; pointer-events: none; }
+
+.skeleton-bar {
+  height: 12px;
+  width: 68px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: slot-shimmer 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-bar { animation: none; }
+}
+
+@keyframes slot-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.slot-error { padding: 12px 0 4px; }
 
 /* Date slider - matches mockup 7b ("segmented slider, marker glides to
    selection") exactly: one continuous track with a single lime thumb that
@@ -649,10 +749,12 @@ a { color: inherit; text-decoration: none; }
   transition: background var(--dur) var(--ease);
 }
 
-.date-slider-all-btn:hover { background: var(--accent-soft); }
+.date-slider-all-btn:hover,
+.date-slider-all-btn.active { background: var(--accent-soft); }
 
 .date-slider-legend {
   display: flex;
+  align-items: center;
   gap: 18px;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -661,11 +763,28 @@ a { color: inherit; text-decoration: none; }
   margin-bottom: 14px;
 }
 
-.date-slider-legend span { display: flex; align-items: center; gap: 6px; }
+.date-slider-legend > span { display: flex; align-items: center; gap: 6px; }
 
 .date-slider-legend .status-dot { width: 6px; height: 6px; border-radius: 999px; }
 .date-slider-legend .status-dot.open { background: var(--accent); }
 .date-slider-legend .status-dot.closed { background: var(--text-faint); }
+
+/* Points explicitly at the calendar as the "further out" escape, pushed to
+   the far end of the legend row. Text link, not another button-shaped thing,
+   so it doesn't compete with the slider's controls. */
+.date-jump-link {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  transition: color var(--dur) var(--ease);
+}
+.date-jump-link:hover { color: var(--accent); }
 
 /* Calendar fallback: a real month grid instead of falling back to the
    native <input type="date"> the day-strip replaced - keeps the escape
@@ -680,6 +799,17 @@ a { color: inherit; text-decoration: none; }
   padding: 10px 12px;
   margin-bottom: 14px;
   max-width: 280px;
+}
+
+/* Names the panel's job so it reads as "the way to reach any date," not a
+   second date picker duplicating the slider. */
+.calendar-panel-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 2px 2px 8px;
 }
 
 .calendar-header {
@@ -765,7 +895,7 @@ a { color: inherit; text-decoration: none; }
   transition: border-color var(--dur) var(--ease);
 }
 
-.form-group input:focus { outline: none; border-color: var(--accent); }
+.form-group input:focus { border-color: var(--accent); }
 
 /* Dashboard book filter bar: search box grows, status select stays fixed.
    Reuses the .form-group input look so the whole admin surface matches. */
@@ -790,7 +920,7 @@ a { color: inherit; text-decoration: none; }
 .book-filters input { flex: 1; min-width: 0; }
 .book-filters select { flex: 0 0 auto; cursor: pointer; }
 .book-filters input:focus,
-.book-filters select:focus { outline: none; border-color: var(--accent); }
+.book-filters select:focus { border-color: var(--accent); }
 
 /* Shrink the shared .btn to match the filter inputs' height - the default
    button padding (15px 26px) towers over the 10px-padded inputs. */
@@ -940,7 +1070,7 @@ a { color: inherit; text-decoration: none; }
 }
 
 .add-fields input:focus,
-.add-fields select:focus { outline: none; border-color: var(--accent); }
+.add-fields select:focus { border-color: var(--accent); }
 
 /* Customer history drawer (feature 7): a right-side sheet over a dim
    overlay. position:fixed is fine here (real app, unlike a sandboxed
@@ -1319,7 +1449,7 @@ a { color: inherit; text-decoration: none; }
   font-size: max(16px, 0.85rem);
 }
 .settings-field input:focus,
-.settings-field select:focus { outline: none; border-color: var(--accent); }
+.settings-field select:focus { border-color: var(--accent); }
 
 .settings-actions { grid-column: 1 / -1; display: flex; align-items: center; margin-top: 4px; }
 
@@ -1390,4 +1520,4 @@ a { color: inherit; text-decoration: none; }
   font-family: var(--font-mono);
   font-size: max(16px, 0.85rem);
 }
-.crud-add input:focus { outline: none; border-color: var(--accent); }
+.crud-add input:focus { border-color: var(--accent); }

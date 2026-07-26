@@ -31,8 +31,14 @@ export function createBookingHold({ serviceId, staffId, startAt, customer }) {
   const service = db.prepare('SELECT * FROM services WHERE id = ? AND active = 1').get(serviceId);
   if (!service) throw new NotFoundError('Service not found.');
 
-  const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND active = 1').get(staffId);
-  if (!staff) throw new NotFoundError('Staff member not found.');
+  // staffId 'any' = "first free chair": the customer didn't pick a barber,
+  // so one is resolved inside the transaction below. For a specific pick we
+  // validate it exists up front, same as before.
+  const isAny = staffId === 'any';
+  if (!isAny) {
+    const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND active = 1').get(staffId);
+    if (!staff) throw new NotFoundError('Staff member not found.');
+  }
 
   const start = new Date(startAt);
   const end = new Date(start.getTime() + service.duration_minutes * 60_000);
@@ -40,6 +46,14 @@ export function createBookingHold({ serviceId, staffId, startAt, customer }) {
   const publicCode = nanoid(12);
 
   const insert = db.transaction(() => {
+    // Resolve "any" to a concrete barber *inside* the transaction, so the
+    // pick and the conflict check that follows are atomic - two concurrent
+    // "first free chair" bookings can't both grab the same barber.
+    const effectiveStaffId = isAny ? pickAvailableStaffId(start, end) : staffId;
+    if (isAny && !effectiveStaffId) {
+      throw new ConflictError('No barber is free at that time. Please pick another slot.');
+    }
+
     const conflict = db
       .prepare(
         `SELECT id FROM appointments
@@ -47,7 +61,7 @@ export function createBookingHold({ serviceId, staffId, startAt, customer }) {
            AND status IN ('confirmed', 'pending_payment')
            AND start_at < ? AND end_at > ?`
       )
-      .get(staffId, end.toISOString(), start.toISOString());
+      .get(effectiveStaffId, end.toISOString(), start.toISOString());
 
     if (conflict) {
       throw new ConflictError('That slot was just taken. Please pick another time.');
@@ -63,7 +77,7 @@ export function createBookingHold({ serviceId, staffId, startAt, customer }) {
       .run(
         publicCode,
         serviceId,
-        staffId,
+        effectiveStaffId,
         customer.name,
         customer.email,
         customer.phone ?? null,
@@ -78,6 +92,41 @@ export function createBookingHold({ serviceId, staffId, startAt, customer }) {
 
   const appointment = insert();
   return { appointment, service };
+}
+
+/**
+ * Picks the first active barber who both works the requested window and has
+ * no conflicting appointment in it - the "first free chair" resolver. Ordered
+ * by id for deterministic assignment; a fairness/load-balancing order could
+ * replace that later without changing callers. Returns null if nobody is free.
+ * Called only inside createBookingHold's transaction.
+ */
+function pickAvailableStaffId(start, end) {
+  const weekday = start.getDay();
+  const startMin = start.getHours() * 60 + start.getMinutes();
+  const endMin = end.getHours() * 60 + end.getMinutes();
+
+  const staff = db.prepare('SELECT id FROM staff WHERE active = 1 ORDER BY id').all();
+  for (const s of staff) {
+    const worksWindow = db
+      .prepare(
+        `SELECT 1 FROM working_hours
+         WHERE staff_id = ? AND weekday = ? AND start_minute <= ? AND end_minute >= ?`
+      )
+      .get(s.id, weekday, startMin, endMin);
+    if (!worksWindow) continue;
+
+    const conflict = db
+      .prepare(
+        `SELECT 1 FROM appointments
+         WHERE staff_id = ?
+           AND status IN ('confirmed', 'pending_payment')
+           AND start_at < ? AND end_at > ?`
+      )
+      .get(s.id, end.toISOString(), start.toISOString());
+    if (!conflict) return s.id;
+  }
+  return null;
 }
 
 export async function createHoldWithCheckout(input) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { api } from '../lib/api';
 
@@ -18,6 +18,11 @@ const HEADLINES = ["Who's cutting?", 'What are we doing?', 'When?', 'Lock it in.
 // truth, just the frontend mirroring the same one.
 const CLOSED_WEEKDAYS = [0, 1]; // Sun, Mon
 const DAYS_AHEAD = 14;
+
+// Sentinel for "first free chair" - carried as the selected staff so the
+// rest of the flow (availability fetch, summary, booking payload) treats it
+// like any barber. id 'any' is what the backend resolves to a real barber.
+const ANY_BARBER = { id: 'any', name: 'First free chair' };
 
 // Segments are flush against each other (no gap), so the thumb's `left`
 // offset is always index * this value. Scaled down from mockup 7b's
@@ -102,6 +107,11 @@ export default function BookPage() {
   const [services, setServices] = useState([]);
   const [staffList, setStaffList] = useState([]);
   const [slots, setSlots] = useState([]);
+  // Distinct from the empty result: while a fetch is in flight the grid must
+  // read as "loading", not "fully booked". slotsError carries a retry path
+  // so a dropped request isn't a dead end.
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState(null);
 
   const [selectedService, setSelectedService] = useState(null);
   const [selectedStaff, setSelectedStaff] = useState(null);
@@ -120,24 +130,36 @@ export default function BookPage() {
   // policy). Defaults to DAYS_AHEAD until the public settings load.
   const [daysAhead, setDaysAhead] = useState(DAYS_AHEAD);
   const [depositEnabled, setDepositEnabled] = useState(true);
+  const [cancelWindowHours, setCancelWindowHours] = useState(24);
 
   useEffect(() => {
     api.getServices().then(setServices).catch((e) => setError(e.message));
     api.getStaff().then(setStaffList).catch((e) => setError(e.message));
     api.getPublicSettings()
-      .then((s) => { setDaysAhead(s.bookingWindowDays); setDepositEnabled(s.depositEnabled); })
+      .then((s) => {
+        setDaysAhead(s.bookingWindowDays);
+        setDepositEnabled(s.depositEnabled);
+        setCancelWindowHours(s.cancellationWindowHours);
+      })
       .catch(() => {}); // fall back to defaults if settings can't load
   }, []);
 
-  useEffect(() => {
+  const loadSlots = useCallback(() => {
     if (!selectedStaff || !selectedService) return;
+    let cancelled = false; // ignore a stale response if inputs changed mid-flight
     setSlots([]);
     setSelectedSlot(null);
+    setSlotsError(null);
+    setSlotsLoading(true);
     api
       .getAvailability(selectedStaff.id, selectedDate, selectedService.duration_minutes)
-      .then((res) => setSlots(res.slots))
-      .catch((e) => setError(e.message));
+      .then((res) => { if (!cancelled) setSlots(res.slots); })
+      .catch((e) => { if (!cancelled) setSlotsError(e.message); })
+      .finally(() => { if (!cancelled) setSlotsLoading(false); });
+    return () => { cancelled = true; };
   }, [selectedStaff, selectedService, selectedDate]);
+
+  useEffect(() => loadSlots(), [loadSlots]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -200,6 +222,10 @@ export default function BookPage() {
   // front and the full price at the chair - so the effective deposit is $0
   // regardless of the service's configured deposit_cents.
   const effectiveDepositCents = depositEnabled && selectedService ? selectedService.deposit_cents : 0;
+  // Drive all deposit copy off the *effective* amount, not the global toggle:
+  // a service can carry a $0 deposit even when deposits are enabled, and
+  // "Pay $0 deposit" is a misleading control.
+  const hasDeposit = effectiveDepositCents > 0;
   const priceLabel = selectedService ? `$${(selectedService.price_cents / 100).toFixed(0)}` : '—';
   const depositLabel = selectedService ? `$${(effectiveDepositCents / 100).toFixed(0)}` : '—';
   const balanceLabel = selectedService
@@ -208,24 +234,58 @@ export default function BookPage() {
 
   return (
     <main className="book-shell">
-      {/* Mobile-only header: back arrow + progress dots + deposit reminder,
-          matching mockup 4b. Hidden at the desktop breakpoint via CSS. */}
-      <div className="book-mobile-header">
-        <button
-          type="button"
-          className="circle-btn"
-          onClick={handleBack}
-          disabled={step === 0}
-          aria-label="Back"
-        >
-          ←
-        </button>
-        <div className="progress-dots">
-          {STEPS.map((_, i) => (
-            <span key={i} className={`dot ${i <= step ? 'filled' : ''}`} />
-          ))}
+      {/* Mobile-only sticky top: back arrow + progress dots, then a running
+          summary of the choices made so far and the price. Desktop gets the
+          same information from the persistent sidebar; mobile previously had
+          neither, so a phone user picked a time without seeing their barber,
+          service, or the cost until the final step. Sticky so it stays in
+          view while the slot list scrolls. Hidden at the desktop breakpoint. */}
+      <div className="book-mobile-top">
+        <div className="book-mobile-header">
+          <button
+            type="button"
+            className="circle-btn"
+            onClick={handleBack}
+            disabled={step === 0}
+            aria-label="Back"
+          >
+            ←
+          </button>
+          <div className="progress-dots">
+            {STEPS.map((_, i) => (
+              <span key={i} className={`dot ${i <= step ? 'filled' : ''}`} />
+            ))}
+          </div>
+          <span className="dep-hint">{hasDeposit ? 'DEPOSIT' : 'NO DEP'}</span>
         </div>
-        <span className="dep-hint">{depositEnabled ? 'DEPOSIT' : 'NO DEP'}</span>
+
+        {selectedStaff && (
+          <div className="book-mobile-summary">
+            <div className="bms-choices">
+              <span className="bms-val">{selectedStaff.name}</span>
+              <span className="bms-sep">·</span>
+              <span className={selectedService ? 'bms-val' : 'bms-empty'}>
+                {selectedService ? selectedService.name : 'pick a service'}
+              </span>
+              {selectedSlot && (
+                <>
+                  <span className="bms-sep">·</span>
+                  <span className="bms-val">
+                    {new Date(selectedSlot).toLocaleString('en-US', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </>
+              )}
+            </div>
+            {selectedService && (
+              <div className="bms-price">
+                <span>{priceLabel}</span>
+                <span className="bms-dep">
+                  {hasDeposit ? `${depositLabel} dep` : 'no deposit'}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="book-grid">
@@ -260,6 +320,26 @@ export default function BookPage() {
 
           {step === 0 && (
             <div>
+              {/* "First free chair" as a real control, not just a caption:
+                  picks the sentinel { id: 'any' } and the backend resolves an
+                  actual barber at booking time from union availability. Given
+                  visual priority as the fastest path. */}
+              <button
+                type="button"
+                className={`option-card any-chair ${selectedStaff?.id === 'any' ? 'selected' : ''}`}
+                onClick={() => setSelectedStaff(ANY_BARBER)}
+              >
+                <div className="option-card-person">
+                  <div className="avatar-circle any">✂</div>
+                  <div>
+                    <div className="title">First free chair</div>
+                    <div className="subtitle">Fastest — we&apos;ll match you with whoever&apos;s open</div>
+                  </div>
+                </div>
+              </button>
+
+              <div className="crew-divider"><span>or pick your barber</span></div>
+
               <div className="option-grid">
                 {staffList.map((member) => (
                   <button
@@ -278,7 +358,6 @@ export default function BookPage() {
                   </button>
                 ))}
               </div>
-              <p className="helper-note">No preference? First free chair takes you.</p>
               <button className="btn" disabled={!selectedStaff} onClick={() => setStep(1)}>
                 Continue
               </button>
@@ -316,10 +395,11 @@ export default function BookPage() {
                   day, instead of each day being its own bordered pill. */}
               <div className="date-slider-row">
                 <div className="date-slider-scroll">
-                  <div className="date-slider-track">
+                  <div className="date-slider-track" role="radiogroup" aria-label="Choose a day">
                     {selectedDayIndex > -1 && (
                       <div
                         className="date-slider-thumb"
+                        aria-hidden="true"
                         style={{ left: selectedDayIndex * SEGMENT_WIDTH + TRACK_PADDING }}
                       />
                     )}
@@ -331,6 +411,9 @@ export default function BookPage() {
                         <button
                           key={iso}
                           type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
                           className={`date-slider-seg ${selected ? 'selected' : ''}`}
                           disabled={closed}
                           onClick={() => pickDate(iso)}
@@ -349,10 +432,10 @@ export default function BookPage() {
                 </div>
                 <button
                   type="button"
-                  className="date-slider-all-btn"
+                  className={`date-slider-all-btn ${showCalendar ? 'active' : ''}`}
                   onClick={() => setShowCalendar((v) => !v)}
                   aria-expanded={showCalendar}
-                  aria-label="Choose another date from the calendar"
+                  aria-label="Jump to another date with the calendar"
                 >
                   <svg
                     width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -362,17 +445,26 @@ export default function BookPage() {
                     <rect x="3" y="4.5" width="18" height="16" rx="2.5" />
                     <path d="M3 9.5h18M8 2.5v4M16 2.5v4" />
                   </svg>
-                  ALL
+                  {showCalendar ? 'CLOSE' : 'DATE'}
                 </button>
               </div>
 
               <div className="date-slider-legend">
                 <span><span className="status-dot open" /> Open</span>
                 <span><span className="status-dot closed" /> Closed</span>
+                {/* Names the slider's range and points at the calendar as the
+                    escape for anything past it, so the button isn't a mystery
+                    parallel picker. */}
+                {!showCalendar && (
+                  <button type="button" className="date-jump-link" onClick={() => setShowCalendar(true)}>
+                    Need a date further out? →
+                  </button>
+                )}
               </div>
 
               {showCalendar && (
                 <div className="calendar-panel">
+                  <div className="calendar-panel-title">Jump to any date</div>
                   <div className="calendar-header">
                     <button type="button" className="circle-btn" onClick={() => shiftMonth(-1)} aria-label="Previous month">‹</button>
                     <span className="calendar-month-label">
@@ -403,8 +495,27 @@ export default function BookPage() {
                 </div>
               )}
 
-              <div className="slot-list">
-                {slots.length === 0 ? (
+              <div className="slot-list" role="radiogroup" aria-label="Available times">
+                {slotsLoading ? (
+                  // Skeleton rows, not a blank grid - reads as "fetching",
+                  // never mistaken for "fully booked".
+                  <div className="slot-group" aria-busy="true">
+                    <div className="slot-group-label">Finding open times…</div>
+                    {[0, 1, 2, 3].map((i) => (
+                      <div key={i} className="slot-row slot-row-skeleton" aria-hidden="true">
+                        <span className="slot-radio" />
+                        <span className="skeleton-bar" />
+                      </div>
+                    ))}
+                  </div>
+                ) : slotsError ? (
+                  <div className="slot-error">
+                    <p className="error-text" style={{ margin: 0 }}>Couldn&apos;t load times. {slotsError}</p>
+                    <button type="button" className="btn btn-secondary" style={{ marginTop: 12, padding: '10px 18px', fontSize: 13 }} onClick={loadSlots}>
+                      Try again
+                    </button>
+                  </div>
+                ) : slots.length === 0 ? (
                   <p className="empty-state">
                     {CLOSED_WEEKDAYS.includes(new Date(`${selectedDate}T00:00:00`).getDay())
                       ? "We're closed this day — pick Tue–Sat from the slider above."
@@ -418,10 +529,12 @@ export default function BookPage() {
                         <button
                           key={slot}
                           type="button"
+                          role="radio"
+                          aria-checked={selectedSlot === slot}
                           className={`slot-row ${selectedSlot === slot ? 'selected' : ''}`}
                           onClick={() => setSelectedSlot(slot)}
                         >
-                          <span className="slot-radio">
+                          <span className="slot-radio" aria-hidden="true">
                             {selectedSlot === slot && <span className="slot-radio-fill" />}
                           </span>
                           {new Date(slot).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
@@ -496,11 +609,13 @@ export default function BookPage() {
               </div>
               <button className="btn" type="submit" disabled={isSubmitting}>
                 {isSubmitting
-                  ? (depositEnabled ? 'Redirecting to payment…' : 'Confirming…')
-                  : (depositEnabled ? `Pay ${depositLabel} deposit` : 'Confirm booking')}
+                  ? (hasDeposit ? 'Redirecting to payment…' : 'Confirming…')
+                  : (hasDeposit ? `Pay ${depositLabel} deposit` : 'Confirm booking')}
               </button>
               <p className="helper-note">
-                Refundable up to 24h before · unpaid holds expire in a few minutes.
+                {hasDeposit
+                  ? `Deposit refundable up to ${cancelWindowHours}h before · unpaid holds expire in a few minutes.`
+                  : `Free to cancel up to ${cancelWindowHours}h before.`}
               </p>
             </form>
           )}
