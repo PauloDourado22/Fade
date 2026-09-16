@@ -1,4 +1,4 @@
-# Barbershop Booking (flagship project)
+# Barbershop Booking 
 
 An appointment booking system: customers pick a service, barber, and time
 slot, pay a deposit through Stripe, and the shop owner manages everything
@@ -103,4 +103,4 @@ future expiry, any CVC.
 - Move from `localStorage` JWTs to httpOnly cookies once there's a reason to
   (e.g. adding third-party scripts that increase XSS surface).
 - Swap SQLite for Postgres if this needs to run on more than one instance.
-# SF-Barbershop-
+
