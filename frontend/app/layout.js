@@ -20,8 +20,16 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata = {
+  metadataBase: new URL('https://fade-nu.vercel.app'),
   title: 'FADE. — Book your next cut in 30 seconds',
   description: 'Pick your barber, lock a slot, drop a $15 deposit. No queues, no no-shows.',
+  openGraph: {
+    title: 'FADE. — Book your next cut in 30 seconds',
+    description: 'Pick your barber, lock a slot, drop a $15 deposit. No queues, no no-shows.',
+    url: 'https://fade-nu.vercel.app',
+    images: ['/og-image.png'],
+  },
+  twitter: { card: 'summary_large_image', images: ['/og-image.png'] },
 };
 
 export default function RootLayout({ children }) {
