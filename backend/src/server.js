@@ -29,7 +29,14 @@ app.use('/api/admin', adminRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(err.status ?? 500).json({ error: 'Internal server error' });
+  // TEMP DEBUG: Render's free tier truncates/delays log visibility, so surface
+  // the real error in the response body instead of relying on the dashboard.
+  // Remove `detail`/`stack` once the Render deploy issue is diagnosed.
+  res.status(err.status ?? 500).json({
+    error: 'Internal server error',
+    detail: err.message,
+    stack: err.stack,
+  });
 });
 
 app.listen(config.port, () => {
